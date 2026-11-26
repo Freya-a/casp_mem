@@ -1,0 +1,4 @@
+extends: ../casp_mem.yaml
+experiment: no_hard_lock
+modules:
+  hard_lock: false

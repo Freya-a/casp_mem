@@ -1,0 +1,4 @@
+extends: ../casp_mem.yaml
+experiment: no_split_condition
+modules:
+  split_condition: false

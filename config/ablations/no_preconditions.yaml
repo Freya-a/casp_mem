@@ -1,0 +1,4 @@
+extends: ../casp_mem.yaml
+experiment: no_preconditions
+modules:
+  preconditions: false

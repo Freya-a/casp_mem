@@ -1,0 +1,11 @@
+model/
+dataset/
+results/
+*.sqlite*
+*.db
+.env
+.env.*
+__pycache__/
+.pytest_cache/
+.venv/
+*.py[cod]

@@ -1,0 +1,4 @@
+extends: ../casp_mem.yaml
+experiment: no_multi_anchor
+modules:
+  multi_anchor: false

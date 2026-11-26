@@ -1,0 +1,3 @@
+extends: casp_mem.yaml
+experiment: mem0_baseline
+baseline: true
