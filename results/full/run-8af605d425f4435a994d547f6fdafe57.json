@@ -1,0 +1,41 @@
+{
+  "started_at": "2026-11-26T07:31:08.649250+00:00",
+  "config": {
+    "experiment": "full",
+    "seed": 42,
+    "models": {
+      "llm_path": "model/Qwen3-8B",
+      "llm_service_url": "http://127.0.0.1:18888/v1",
+      "llm_served_name": "Qwen3-8B-local",
+      "embedding_path": "model/Qwen3-Embedding-0.6B",
+      "nli_path": "model/mDeBERTa-v3-base-mnli-xnli",
+      "embedding_dimensions": 1024
+    },
+    "paths": {
+      "dataset": "dataset/HaluMem-Medium",
+      "mem0": "mem0_v0.1.118_local",
+      "results": "results"
+    },
+    "modules": {
+      "preconditions": true,
+      "counterfactual": true,
+      "patch_check": true,
+      "hard_lock": true,
+      "multi_anchor": true,
+      "split_condition": true,
+      "contradiction_threshold": 0.8,
+      "entailment_threshold": 0.5,
+      "modification_cost": 0.5,
+      "miss_cost": 1.0,
+      "dependency_weight": 1.0,
+      "propagation": 1.0,
+      "max_spans": 22
+    }
+  },
+  "seed": 42,
+  "operation": "add",
+  "mem0_import": "/home/shu1004/ld/system/casp_mem_project/mem0_v0.1.118_local/mem0/__init__.py",
+  "status": "failed_or_rejected",
+  "error": "llm_path missing: /home/shu1004/ld/system/casp_mem_project/model/Qwen3-8B",
+  "error_type": "FileNotFoundError"
+}

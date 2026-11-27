@@ -1,6 +1,13 @@
-model/
-dataset/
-results/
+# 本地模型权重：按 model/README.md 从上游下载。
+model/**/*.safetensors
+model/**/*.bin
+model/**/.gitattributes
+model/**/.cache/
+
+# 大型原始数据另以 gzip 形式保存，按数据集说明解压。
+dataset/LongMemEval/longmemeval_s_cleaned.json
+
+# 运行时数据库、凭据和缓存。
 *.sqlite*
 *.db
 .env

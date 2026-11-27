@@ -4,11 +4,13 @@
 
 ## 内容和资源
 
-- `casp_mem/`：结构化模型客户端、无损分段、范围定位、补丁、审计和独立适配层。
-- `mem0_v0.1.118_local/`：基线运行源码、许可和本地配置例；没有复制虚拟环境、缓存、历史实验或数据库。
-- `dataset/HaluMem-Medium/`：从旧项目实际复制的数据集；`model/` 当前为空，三个模型须由使用者在服务空闲时复制到配置所列目录，不要移动旧文件。数据集不由本轮测试读取。
-- `config/casp_mem.yaml`、`config/ablations/`、`config/mem0_baseline.yaml`：完整方法、单开关消融及基线。路径均相对本项目根目录，服务 URL 与模型文件路径分开。
-- `results/<experiment>/`：该实验独立的主 Qdrant、锚点 Qdrant、SQLite、Mem0 内部目录和运行日志；模型、数据、缓存、数据库和结果默认被 `.gitignore` 排除。请为每个不同实验指定唯一 `experiment`，同名实验会复用同一套存储。
+- `casp_mem/`：CASP 方法源码，包括模型客户端、分段、范围定位、补丁、审计和适配层。
+- `mem0_v0.1.118_local/`：本地基线源码、许可和配置例；详见 `docs/mem0-copy-sha256.txt`。
+- `model/`：三个模型的目录链接、配置、分词器及模型卡。权重未纳入仓库，下载来源和命令见 [model/README.md](model/README.md)。
+- `dataset/`：HaluMem-Medium、LoCoMo 和 LongMemEval 数据及来源说明。LongMemEval 完整源文件以 gzip 保存，使用前按 [数据说明](dataset/LongMemEval/README.md) 解压。
+- `config/`：完整方法、单开关消融及基线配置；模型路径和服务地址分别配置。
+- `scripts/`、`tests/`：运行入口和自动化测试。
+- `results/`：现有运行记录；当前仅有一次失败记录，详见 [results/README.md](results/README.md)。为不同实验指定唯一 `experiment`，同名实验会复用同一套存储。数据库和缓存由 `.gitignore` 排除。
 
 ## 算法和边界
 
