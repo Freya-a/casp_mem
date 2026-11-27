@@ -24,3 +24,4 @@ class PatchOp:
     anchors: tuple[str, ...] = field(default_factory=tuple)
     old_branch: str | None = None
     new_branch: str | None = None
+    op_mode: str | None = None

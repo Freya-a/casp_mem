@@ -1,10 +1,11 @@
 import uuid
 
 class AnchorIndex:
-    def __init__(self, client, collection, embedder, dimensions):
+    def __init__(self, client, collection, embedder, dimensions, score_space=None):
         from qdrant_client import models
         self.client, self.collection, self.embedder = client, collection, embedder
         self.models = models
+        self.score_space = score_space
         if not client.collection_exists(collection):
             client.create_collection(collection_name=collection, vectors_config=models.VectorParams(size=dimensions, distance=models.Distance.COSINE))
 
@@ -13,6 +14,7 @@ class AnchorIndex:
         must = []
         if parent_id is not None: must.append(m.FieldCondition(key='parent_id', match=m.MatchValue(value=str(parent_id))))
         if user_id is not None: must.append(m.FieldCondition(key='user_id', match=m.MatchValue(value=user_id)))
+        if parent_id is None and self.score_space is not None: must.append(m.FieldCondition(key='score_space', match=m.MatchValue(value=self.score_space)))
         must_not = [m.FieldCondition(key='version', match=m.MatchValue(value=exclude_version))] if exclude_version is not None else []
         return m.Filter(must=must, must_not=must_not)
 
@@ -22,7 +24,7 @@ class AnchorIndex:
         points = []
         for i, anchor in enumerate(anchors):
             point_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f'{user_id}\0{parent_id}\0{version}\0{i}\0{anchor}'))
-            points.append(m.PointStruct(id=point_id, vector=self.embedder.embed(anchor), payload={'parent_id':str(parent_id),'user_id':user_id,'version':version,'anchor':anchor}))
+            points.append(m.PointStruct(id=point_id, vector=self.embedder.embed(anchor), payload={'parent_id':str(parent_id),'user_id':user_id,'version':version,'anchor':anchor,'score_space':self.score_space}))
         if points:
             self.client.upsert(collection_name=self.collection, points=points, wait=True)
         # Delete all previous points, including same-version points no longer in the desired list.
@@ -38,4 +40,4 @@ class AnchorIndex:
 
     def search(self, query, user_id, limit):
         hits = self.client.query_points(collection_name=self.collection, query=self.embedder.embed(query, query=True), query_filter=self._filter(user_id=user_id), limit=limit, with_payload=True).points
-        return [{'parent_id':p.payload['parent_id'], 'version':p.payload['version'], 'score':p.score} for p in hits]
+        return [{'parent_id':p.payload['parent_id'], 'version':p.payload['version'], 'user_id':p.payload['user_id'], 'score':p.score} for p in hits if self.score_space is None or p.payload.get('score_space') == self.score_space]

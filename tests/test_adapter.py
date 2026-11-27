@@ -58,11 +58,11 @@ def test_anchor_search_filters_stale_and_deduplicates():
     memory.payload.update(casp_version=3)
     memory.search = lambda *a,**k: {'results':[{'id':'id','memory':'old','score':0.4}]}
     index = Index()
-    index.search = lambda *a: [{'parent_id':'id','version':3,'score':.9}, {'parent_id':'id','version':2,'score':.99}]
+    index.search = lambda *a: [{'parent_id':'id','version':3,'user_id':'u','score':.9}, {'parent_id':'id','version':2,'user_id':'u','score':.99}]
     result = Mem0Adapter(memory, Pipeline(), index).search('query', user_id='u')
     assert len(result) == 1 and result[0]['id'] == 'id'
     memory.search = lambda *a,**k: {'results':[]}
-    index.search = lambda *a: [{'parent_id':'id','version':2,'score':.99}]
+    index.search = lambda *a: [{'parent_id':'id','version':2,'user_id':'u','score':.99}]
     assert Mem0Adapter(memory, Pipeline(), index).search('query', user_id='u') == []
 
 

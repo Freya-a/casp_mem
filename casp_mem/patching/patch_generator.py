@@ -15,9 +15,11 @@ def generate(llm, nli, text, evidence, spans, decisions, options):
         if not isinstance(patches, list) or any(not isinstance(p, PatchOp) for p in patches) or {p.span_id for p in patches} != affected or len(patches) != len(affected):
             raise ValueError('patches must cover affected spans exactly once')
         for p in patches:
-            if p.operation not in OPS or not isinstance(p.text, str) or not p.text.strip():
-                raise ValueError('invalid patch')
             decision = next(d for d in decisions if d.span_id == p.span_id)
+            if p.operation not in OPS or not isinstance(p.text, str) or (not p.text.strip() and not (p.text == '' and p.operation == 'PRUNE_OR_ADAPT' and p.op_mode == 'PRUNE' and decision.label in {'ATTR_CONFLICT', 'CASCADED_INVALID'} and isinstance(decision.reason, str) and decision.reason.strip())):
+                raise ValueError('invalid patch')
+            if p.op_mode not in (None, 'PRUNE', 'ADAPT') or (p.op_mode is not None and p.operation != 'PRUNE_OR_ADAPT'):
+                raise ValueError('invalid patch mode')
             if decision.label == 'CONDITION_SHIFT' and p.operation != 'SPLIT_CONDITION':
                 raise ValueError('condition shift requires a condition split')
             if p.operation == 'SPLIT_CONDITION':
@@ -35,10 +37,10 @@ def generate(llm, nli, text, evidence, spans, decisions, options):
     patches = llm.patches(evidence, context, decisions, options.get('split_condition', True))
     validate(patches)
     if options.get('patch_check', True):
-        failing = [p for p in patches if not check(nli, evidence, text, p, options.get('contradiction_threshold', .8))]
+        failing = [p for p in patches if p.text and not check(nli, evidence, text, p, options.get('contradiction_threshold', .8))]
         if failing:
             patches = llm.patches(evidence, context, decisions, options.get('split_condition', True), repair='Patch NLI contradiction; repair once')
             validate(patches)
-            if any(not check(nli, evidence, text, p, options.get('contradiction_threshold', .8)) for p in patches):
+            if any(p.text and not check(nli, evidence, text, p, options.get('contradiction_threshold', .8)) for p in patches):
                 raise ValueError('patch NLI check failed after repair')
     return patches

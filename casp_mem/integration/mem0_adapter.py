@@ -22,9 +22,11 @@ class PartialBatchError(RuntimeError):
 
 class Mem0Adapter:
     """Use this adapter instead of Memory.add/update. Evidence is passed as a call argument."""
-    def __init__(self, memory, pipeline, anchors=None, multi_anchor=True):
+    def __init__(self, memory, pipeline, anchors=None, multi_anchor=True, comparable_scores=False, score_space=None):
         self.memory, self.pipeline, self.anchors = memory, pipeline, anchors
         self.multi_anchor = multi_anchor
+        self.comparable_scores = comparable_scores
+        self.score_space = score_space
         self._lock = threading.RLock()
         if multi_anchor and anchors is None:
             raise ValueError('multi-anchor mode requires an independent index')
@@ -35,22 +37,30 @@ class Mem0Adapter:
             raise ValueError('memory not found in user scope')
         return point
 
-    def update(self, memory_id, *, raw_evidence, user_id):
+    def update(self, memory_id, *, raw_evidence, user_id, forced_seeds=None):
         if not isinstance(raw_evidence, str) or not raw_evidence.strip() or not user_id:
             raise ValueError('explicit raw evidence and user_id required')
         with self._lock:
             point = self._get(memory_id, user_id)
             payload = deepcopy(point.payload)
-            result = self.pipeline.run(payload['data'], raw_evidence, payload.get('casp_span_cache'))
+            args = (payload['data'], raw_evidence, payload.get('casp_span_cache'))
+            result = self.pipeline.run(*args, forced_seeds=forced_seeds) if forced_seeds is not None else self.pipeline.run(*args)
             version = int(payload.get('casp_version', 0)) + 1
             payload.update(casp_version=version, casp_span_cache=result.cache, casp_anchors=result.anchors if self.multi_anchor else [])
+            if self.score_space is not None:
+                payload['casp_score_space'] = self.score_space
             try:
                 self.memory._update_memory(memory_id, result.text, {}, metadata=payload)
             except Exception as e:
-                current = self.memory.vector_store.get(vector_id=memory_id)
+                try:
+                    current = self.memory.vector_store.get(vector_id=memory_id)
+                except Exception as probe_error:
+                    raise PartialWriteError(f'main memory {memory_id} write status unknown; anchors were not synchronized; read-back failed: {probe_error}') from e
                 if current and current.payload.get('casp_version') == version and current.payload.get('data') == result.text:
                     raise PartialWriteError(f'main memory {memory_id} version {version} was written but Mem0 history/write failed; inspect history and run recover') from e
-                raise
+                if current and current.payload.get('casp_version', 0) == point.payload.get('casp_version', 0) and current.payload.get('data') == point.payload.get('data'):
+                    raise
+                raise PartialWriteError(f'main memory {memory_id} differs from both old and intended state; anchors were not synchronized') from e
             if self.multi_anchor:
                 try:
                     self.anchors.replace(memory_id, user_id, version, result.anchors)
@@ -69,12 +79,22 @@ class Mem0Adapter:
     def delete(self, memory_id, *, user_id):
         with self._lock:
             self._get(memory_id, user_id)
-            try:
-                if self.multi_anchor:
+            anchor_state = 'not enabled'
+            if self.multi_anchor:
+                try:
                     self.anchors.replace(memory_id, user_id, 0, [])
+                    anchor_state = 'removed'
+                except Exception as exc:
+                    raise PartialDeleteError(f'delete of {memory_id}: parent unchanged; anchor removal may be partial; run recover: {exc}') from exc
+            try:
                 self.memory._delete_memory(memory_id)
             except Exception as exc:
-                raise PartialDeleteError(f'delete of {memory_id} may be partial; if the parent exists run recover, otherwise inspect SQLite history and anchor collection: {exc}') from exc
+                try:
+                    parent = self.memory.vector_store.get(vector_id=memory_id)
+                    state = 'present' if parent else 'absent'
+                except Exception:
+                    state = 'unknown'
+                raise PartialDeleteError(f'delete of {memory_id}: parent {state}, anchors {anchor_state}; history may be incomplete; if parent exists run recover: {exc}') from exc
             return {'id':memory_id, 'event':'DELETE'}
 
     def search(self, query, *, user_id, limit=10):
@@ -84,18 +104,41 @@ class Mem0Adapter:
         if not self.multi_anchor:
             return main
         hits = self.anchors.search(query, user_id, limit)
-        result = {str(item['id']):item for item in main}
+        result = {str(item['id']): dict(item) for item in main}
+        comparable = self.comparable_scores
+        if comparable and self.score_space is not None:
+            for item in main:
+                try:
+                    point = self._get(str(item['id']), user_id)
+                except ValueError:
+                    comparable = False
+                    break
+                if point.payload.get('casp_score_space') != self.score_space:
+                    comparable = False
+                    break
+        extra = {}
         for hit in hits:
-            parent_id = hit['parent_id']
+            if hit.get('user_id') != user_id:
+                continue
+            parent_id = str(hit['parent_id'])
             try:
                 point = self._get(parent_id, user_id)
             except ValueError:
                 continue
+            if self.score_space is not None and point.payload.get('casp_score_space') != self.score_space:
+                continue
             if point.payload.get('casp_version', 0) != hit['version']:
                 continue
-            if str(parent_id) not in result:
-                result[str(parent_id)] = {'id':parent_id, 'memory':point.payload['data'], 'score':hit['score'], 'user_id':user_id}
-        return sorted(result.values(), key=lambda x:x.get('score', 0) or 0, reverse=True)[:limit]
+            score = hit['score']
+            if parent_id in result:
+                if comparable and score > (result[parent_id].get('score') or 0):
+                    result[parent_id]['score'] = score
+            elif parent_id not in extra or score > extra[parent_id]['score']:
+                extra[parent_id] = {'id':parent_id, 'memory':point.payload['data'], 'score':score, 'user_id':user_id}
+        if comparable:
+            return sorted([*result.values(), *extra.values()], key=lambda x:x.get('score', 0) or 0, reverse=True)[:limit]
+        # Scores from distinct embedding pipelines cannot be ranked against one another.
+        return (main + sorted(extra.values(), key=lambda x:x['score'], reverse=True))[:limit]
 
     def add(self, raw_evidence, *, user_id, metadata=None):
         """Mem0 fact/action prompts; execute UPDATE ourselves without swallowed exceptions."""
@@ -136,12 +179,18 @@ class Mem0Adapter:
                     if event == 'ADD':
                         if not isinstance(text,str) or not text.strip(): raise ValueError('empty ADD')
                         payload = {**(metadata or {}), 'user_id':user_id}
-                        mid = m._create_memory(text, embeddings, payload)
+                        if self.score_space is not None:
+                            payload['casp_score_space'] = self.score_space
+                        try:
+                            mid = m._create_memory(text, embeddings, payload)
+                        except Exception as exc:
+                            raise PartialWriteError(f'ADD write status unknown; Mem0 may have written the parent before failing: {exc}') from exc
                         output.append({'id':mid,'event':event,'memory':text})
                     elif event == 'UPDATE':
                         output.append(self.update(id_map[action['id']], raw_evidence=raw_evidence, user_id=user_id))
                     elif event == 'DELETE':
-                        output.append(self.delete(id_map[action['id']], user_id=user_id))
+                        from casp_mem.integration.delete_guard import DeleteGuard
+                        output.append(DeleteGuard(self).handle(id_map[action['id']], raw_evidence, user_id))
                     elif event != 'NONE':
                         raise ValueError(f'unknown Mem0 action {event}')
                 except Exception as exc:

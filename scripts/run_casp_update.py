@@ -31,7 +31,6 @@ def import_mem0(cfg, internal_dir):
 def build(cfg, data_dir, mem0):
     from casp_mem.clients.llm_client import QwenClient
     from casp_mem.clients.nli_scorer import NLIScorer
-    from casp_mem.clients.embedding_client import EmbeddingClient
     from casp_mem.pipeline import Pipeline
     from casp_mem.integration.mem0_adapter import Mem0Adapter
     models, switches = cfg['models'], cfg['modules']
@@ -48,12 +47,22 @@ def build(cfg, data_dir, mem0):
     llm = QwenClient(models['llm_service_url'], models['llm_served_name'])
     nli = NLIScorer(project_path(models['nli_path']))
     anchors = None
+    score_space = None
     if switches.get('multi_anchor', True):
         from qdrant_client import QdrantClient
         from casp_mem.integration.anchor_index import AnchorIndex
-        embed = EmbeddingClient(project_path(models['embedding_path']))
-        anchors = AnchorIndex(QdrantClient(path=str(data_dir / 'anchor_qdrant')), 'anchors', embed, models['embedding_dimensions'])
-    return Mem0Adapter(memory, Pipeline(llm, nli, switches), anchors, switches.get('multi_anchor', True))
+        class SharedEmbedder:
+            def embed(self, text, query=False):
+                return memory.embedding_model.embed(text, 'search' if query else 'add')
+        score_space = 'mem0-hf-v1:' + str(project_path(models['embedding_path']))
+        anchors = AnchorIndex(QdrantClient(path=str(data_dir / 'anchor_qdrant')), 'anchors', SharedEmbedder(), models['embedding_dimensions'], score_space=score_space)
+        from qdrant_client import models as qmodels
+        parent_vectors = memory.vector_store.client.get_collection(memory.vector_store.collection_name).config.params.vectors
+        anchor_vectors = anchors.client.get_collection(anchors.collection).config.params.vectors
+        comparable = (isinstance(parent_vectors, qmodels.VectorParams) and isinstance(anchor_vectors, qmodels.VectorParams) and parent_vectors.distance == anchor_vectors.distance == qmodels.Distance.COSINE)
+    else:
+        comparable = False
+    return Mem0Adapter(memory, Pipeline(llm, nli, switches), anchors, switches.get('multi_anchor', True), comparable_scores=comparable, score_space=score_space)
 
 
 def main():

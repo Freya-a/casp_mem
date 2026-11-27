@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from casp_mem.segmentation.segmenter import cached_segment, cache_record, segment
+from casp_mem.segmentation.segmenter import BOUNDARY, cached_segment, cache_record, segment
 from casp_mem.segmentation.preconditions import annotate
 from casp_mem.grounding.seed_detector import detect
 from casp_mem.grounding.counterfactual import sensitivities
@@ -24,13 +24,27 @@ class Pipeline:
     def __init__(self, llm, nli, options):
         self.llm, self.nli, self.options = llm, nli, options
 
-    def run(self, old, evidence, cache=None):
+    def run(self, old, evidence, cache=None, *, forced_seeds=None):
         if not isinstance(old, str) or not old.strip() or not isinstance(evidence, str) or not evidence.strip():
             raise Rejected('old memory and raw evidence are required')
         try:
-            spans = annotate(self.llm, old, cached_segment(old, cache), self.options.get('preconditions', True))
+            enabled = self.options.get('preconditions', True)
+            model = getattr(self.llm, 'annotation_cache_key', None)
+            annotation_config = {'schema': 1, 'model': model, 'annotator': type(self.llm).__module__ + '.' + type(self.llm).__qualname__, 'preconditions': enabled, 'boundary': BOUNDARY.pattern, 'boundary_flags': BOUNDARY.flags}
+            cached = None
+            if cache and model and forced_seeds is None:
+                try:
+                    cached = cached_segment(old, cache, segmenter=lambda _: [], annotation_config=annotation_config)
+                except (ValueError, TypeError, AttributeError):
+                    pass
+            spans = cached if cached is not None else annotate(self.llm, old, segment(old), enabled)
             threshold = self.options.get('contradiction_threshold', .8)
             seeds, scores = detect(self.nli, evidence, old, spans, threshold)
+            if forced_seeds is not None:
+                forced = set(forced_seeds)
+                if not forced or not forced <= {s.id for s in spans}:
+                    raise ValueError('invalid forced delete seeds')
+                seeds |= forced
             if not seeds:
                 raise ValueError('no reliable conflict seed')
             deltas = sensitivities(self.nli, old, evidence, spans, seeds) if self.options.get('counterfactual', True) else {s.id:0.0 for s in spans}
@@ -45,10 +59,15 @@ class Pipeline:
             if any(d.label == 'UNCERTAIN' for d in decisions):
                 raise ValueError('semantic scope uncertain')
             patches = generate(self.llm, self.nli, old, evidence, spans, decisions, self.options)
+            if forced_seeds is not None and any(p.operation != 'PRUNE_OR_ADAPT' or p.op_mode not in {'PRUNE', 'ADAPT'} for p in patches if p.span_id in forced_seeds):
+                raise ValueError('partial delete requires a prune or adapt patch')
             locked = {d.span_id for d in decisions if d.label == 'LOCKED_INVARIANT'}
+            if forced_seeds is not None and not locked:
+                raise ValueError('partial delete has no confirmed retained span')
             candidate, locations = assemble(old, spans, patches, locked)
             # The ablation uses a whitespace-normalized merge, then resegments; it does not guarantee character fidelity.
-            hard = self.options.get('hard_lock', True)
+            # Pruning must never normalize or alter a locked span at a seam.
+            hard = self.options.get('hard_lock', True) or any(p.operation == 'PRUNE_OR_ADAPT' and p.op_mode == 'PRUNE' for p in patches)
             if not hard:
                 pieces = []
                 for s in spans:
@@ -63,7 +82,15 @@ class Pipeline:
                         locations[s.id] = (start, start + len(piece)); cursor = start + len(piece)
                     else: locations[s.id] = (cursor, cursor)
             audit(self.nli, old, candidate, evidence, spans, locked, locations, threshold, hard_lock=hard, entailment_threshold=self.options.get('entailment_threshold', .5))
-            return Result(candidate, patches, [a for p in patches for a in p.anchors] if self.options.get('multi_anchor', True) else [], cache_record(candidate, segment(candidate)), decisions)
+            if not candidate.strip():
+                raise ValueError('empty candidate requires a confirmed full delete')
+            new_cache = None
+            if model:
+                try:
+                    new_cache = cache_record(candidate, annotate(self.llm, candidate, segment(candidate), enabled), annotation_config)
+                except Exception:
+                    new_cache = None
+            return Result(candidate, patches, [a for p in patches for a in p.anchors] if self.options.get('multi_anchor', True) else [], new_cache, decisions)
         except Rejected:
             raise
         except Exception as e:

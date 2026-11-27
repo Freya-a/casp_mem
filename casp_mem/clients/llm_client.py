@@ -8,6 +8,7 @@ class QwenClient:
         from openai import OpenAI
         self.client = OpenAI(base_url=base_url, api_key=api_key, timeout=timeout)
         self.model = model
+        self.annotation_cache_key = {'model': model, 'endpoint': base_url, 'prompt_version': 1}
 
     def _json(self, instruction, payload, thinking=False):
         response = self.client.chat.completions.create(
@@ -38,7 +39,12 @@ class QwenClient:
         payload = {'evidence':evidence, 'spans':[{'id':s.id, 'text':text[s.start:s.end], 'selected':s.id in selected, 'annotation':asdict(s)} for s in spans]}
         return self._json('Review scope only. For each span output span_id, label and reason. Labels: ATTR_CONFLICT, CONDITION_SHIFT, CASCADED_INVALID, LOCKED_INVARIANT, UNCERTAIN. Selected spans cannot be locked; include any additional dependent spans. Output no rewritten text. Return {"decisions": [...]}', payload, thinking=True)['decisions']
 
+    def classify_delete(self, old, evidence):
+        from casp_mem.segmentation.segmenter import segment
+        spans = [{'id': s.id, 'text': old[s.start:s.end]} for s in segment(old)]
+        return self._json('Decide whether the original user evidence requests or justifies deleting the entire memory, only part, or is uncertain. Return decision FULL, PRUNE, or UNCERTAIN, reason, and whole_confirmed as a boolean. FULL only when every fact should be removed, including a clear user request to forget the entire memory. If any fact remains valid choose PRUNE and identify only invalid span ids in invalid_span_ids; if a span mixes valid and invalid facts or scope is unclear choose UNCERTAIN. If unsure choose UNCERTAIN.', {'memory':old, 'spans':spans, 'raw_evidence':evidence}, thinking=True)
+
     def patches(self, evidence, context, decisions, split, repair=None):
         payload = {'evidence':evidence,'local_context':context,'decisions':[asdict(d) for d in decisions if any(c['id']==d.span_id for c in context)], 'split_enabled':split, 'repair_instruction':repair}
-        rows = self._json('Generate one patch per editable span, no patches for context. Each patch has span_id, operation (REPLACE_ATTR, SPLIT_CONDITION, PRUNE_OR_ADAPT), text, anchors (array), old_branch and new_branch. For SPLIT_CONDITION old_branch must be an exact old text substring, new_branch an exact evidence substring, both at least three characters and included in the text. SPLIT_CONDITION only for explicit source or evidence conditions; each anchor must be an exact source substring and appear in the patch. Preserve punctuation where necessary; if not safe return empty array. Return {"patches": [...]}', payload)['patches']
-        return [PatchOp(span_id=p['span_id'], operation=p['operation'], text=p['text'], anchors=tuple(p.get('anchors', [])), old_branch=p.get('old_branch'), new_branch=p.get('new_branch')) for p in rows]
+        rows = self._json('Generate one patch per editable span, no patches for context. Each patch has span_id, operation (REPLACE_ATTR, SPLIT_CONDITION, PRUNE_OR_ADAPT), text, anchors (array), old_branch and new_branch, and op_mode (PRUNE or ADAPT) for PRUNE_OR_ADAPT. For a grounded removal use PRUNE and an empty string as text. For SPLIT_CONDITION old_branch must be an exact old text substring, new_branch an exact evidence substring, both at least three characters and included in the text. SPLIT_CONDITION only for explicit source or evidence conditions; each anchor must be an exact source substring and appear in the patch. Preserve punctuation where necessary; if not safe return empty array. Return {"patches": [...]}', payload)['patches']
+        return [PatchOp(span_id=p['span_id'], operation=p['operation'], text=p['text'], anchors=tuple(p.get('anchors', [])), old_branch=p.get('old_branch'), new_branch=p.get('new_branch'), op_mode=p.get('op_mode')) for p in rows]
